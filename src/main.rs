@@ -138,9 +138,9 @@ fn on_exit(con: Arc<Mutex<I3Connection>>) {
         let name_parts = match parse_workspace_name(workspace.name.as_str()) {
             Some(np) => np,
             None => NameParts {
-                num: i.to_string(),
-                shortname: String::from(""),
-                icons: String::from(""),
+                num: Some(i.to_string()),
+                shortname: None,
+                icons: None,
             },
         };
         let new_name: String = construct_workspace_name(&name_parts);
@@ -149,43 +149,52 @@ fn on_exit(con: Arc<Mutex<I3Connection>>) {
         if workspace.name == new_name {
             continue;
         }
-
-        c.run_command(format!("rename workspace {} to {}", workspace.name, new_name).as_str());
+        info!("rename workspace {} to {}", workspace.name, new_name);
+        // c.run_command(format!("rename workspace {} to {}", workspace.name, new_name).as_str());
     }
 
     std::process::exit(0);
 }
 
+#[derive(Debug, Clone)]
 struct NameParts {
-    num: String,
-    shortname: String,
-    icons: String,
+    num: Option<String>,
+    shortname: Option<String>,
+    icons: Option<String>,
 }
 
 fn parse_workspace_name(name: &str) -> Option<NameParts> {
-    let re = Regex::new(r"(?P<num>\d+):?(?P<shortname>\w+)? ?(?P<icons>.+)?").unwrap();
-    let matches = re
-        .find_iter(name)
-        .map(|m| m.as_str())
-        .collect::<Vec<&str>>();
-    if matches.len() == 3 {
-        return Some(NameParts {
-            num: String::from(matches[0]),
-            shortname: String::from(matches[1]),
-            icons: String::from(matches[2]),
-        });
-    } else {
-        return None;
+    info!("name: {}", name);
+    let re = Regex::new(r"(?P<num>\d+):?(?P<shortname>-u:\w)? ?(?P<icons>.+)?").unwrap();
+    let matches = re.captures(name);
+    info!(
+        "iter length: {:?}",
+        re.captures_iter(name)
+            .into_iter()
+            .collect::<Vec<regex::Captures>>()
+            .len()
+    );
+    // info!("match is: {}", matches[<F12>0]);
+    // TODO: distinguish None?
+    match matches {
+        Some(m) => {
+            return Some(NameParts {
+                num: m.get(1).map(|m| String::from(m.as_str())),
+                shortname: m.get(2).map(|m| String::from(m.as_str())),
+                icons: m.get(3).map(|m| String::from(m.as_str())),
+            });
+        }
+        None => return None,
     }
 }
 
 fn construct_workspace_name(np: &NameParts) -> String {
-    let first_part = [np.num.as_str(), ":"].concat();
-    let last_part = if !np.shortname.is_empty() || !np.icons.is_empty() {
-        if !np.icons.is_empty() {
-            [np.shortname.as_str(), " ", np.icons.as_str()].concat()
+    let first_part = [np.num.as_ref().unwrap().as_str(), ":"].concat();
+    let last_part = if np.shortname.is_some() || np.icons.is_some() {
+        if np.icons.is_some() {
+            [np.shortname.as_ref().unwrap_or(&String::from("")).as_str(), " ", np.icons.as_ref().unwrap().as_str()].concat()
         } else {
-            String::from(np.shortname.as_str())
+            String::from(np.shortname.as_ref().unwrap_or(&String::from("")).as_str())
         }
     } else {
         String::from(" ")
@@ -211,9 +220,9 @@ fn rename_workspaces(con: Arc<Mutex<I3Connection>>) -> Result<(), i3ipc::Message
         {
             Some(n) => n,
             None => NameParts {
-                num: n.to_string(),
-                shortname: String::from(""),
-                icons: String::from(""),
+                num: Some(n.to_string()),
+                shortname: None,
+                icons: None,
             },
         };
         let mut icon_list: Vec<String> = Vec::new();
@@ -232,6 +241,10 @@ fn rename_workspaces(con: Arc<Mutex<I3Connection>>) -> Result<(), i3ipc::Message
         }
         prev_output = Some(ws_info.output.clone());
 
+        // TODO: del
+        let foo = &name_parts.clone();
+        info!("{:?}", foo);
+
         // TODO: renumber workspaces
         let new_num = name_parts.num;
         n += 1;
@@ -239,13 +252,13 @@ fn rename_workspaces(con: Arc<Mutex<I3Connection>>) -> Result<(), i3ipc::Message
         let new_name = construct_workspace_name(&NameParts {
             num: new_num,
             shortname: name_parts.shortname,
-            icons: new_icons,
+            icons: Some(new_icons),
         });
 
         match workspace.name.as_ref() {
             Some(n) => {
                 info!("rename workspace {} to {}", n, new_name);
-                c.run_command(format!("rename workspace {} to {}", n, new_name).as_str())?;
+                // c.run_command(format!("rename workspace {} to {}", n, new_name).as_str())?;
             }
             None => warn!("Could not find workspace name"),
         }
@@ -337,6 +350,7 @@ fn format_icon_list(icons: Vec<String>) -> String {
             new_list.push(
                 [
                     icon.to_string(),
+                    " ".to_string(),
                     encode_base_10_number(*count as usize, SUPERSCRIPT),
                 ]
                 .concat(),

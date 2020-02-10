@@ -501,7 +501,10 @@ fn icon_for_window(node: &i3ipc::reply::Node) -> String {
 
 fn format_icon_list(icons: Vec<String>) -> String {
     let mut new_list: Vec<String> = Vec::new();
-    let icon_count = icons.into_iter().collect::<Counter<_>>();
+    let icon_count = icons
+        .into_iter()
+        .collect::<Counter<_>>()
+        .most_common_ordered();
     for (icon, count) in icon_count.iter() {
         if *count > 1 {
             let settings = SETTINGS.lock().unwrap();

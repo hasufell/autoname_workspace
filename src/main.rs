@@ -145,6 +145,7 @@ fn main() -> Result<()> {
         (about: "Polybar/i3 workspace formatter")
         (@arg FORMAT: -i --icon_list_format +takes_value "Sets the format for icon list: superscript, subscript or digits (default)")
         (@arg RENUMBER_WORKSPACES: -r --renumber_workspaces "Whether to renumber the workspaces (default: false)")
+        (@arg debug: -d "Whether to print debugs (default: false)")
     );
 
     let format = app
@@ -153,6 +154,7 @@ fn main() -> Result<()> {
         .value_of("FORMAT")
         .map(|s| s.to_string());
     let renum = app.clone().get_matches().is_present("RENUMBER_WORKSPACES");
+    let debug = app.clone().get_matches().is_present("debug");
 
     if let Some(c) = format {
         if let Ok(f) = IconListFormat::from_str(&c) {
@@ -170,7 +172,9 @@ fn main() -> Result<()> {
         settings.renumber_workspaces = renum;
     }
 
-    simple_logger::init().unwrap();
+    if debug {
+        simple_logger::init().unwrap();
+    }
 
     // establish a connection to i3 over a unix socket
     let connection = Arc::new(Mutex::new(I3Connection::connect().unwrap()));

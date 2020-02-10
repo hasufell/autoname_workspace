@@ -3,20 +3,61 @@ extern crate i3ipc;
 extern crate signal_hook;
 #[macro_use(lazy_static)]
 extern crate lazy_static;
-#[macro_use]
 extern crate log;
 extern crate simple_logger;
+#[macro_use]
+extern crate error_chain;
+#[macro_use]
+extern crate clap;
 
 use counter::Counter;
+use errors::*;
 use i3ipc::I3Connection;
-use log::{info, trace, warn};
+use log::{info, warn};
 use regex::Regex;
 use signal_hook::{iterator::Signals, SIGINT, SIGTERM};
 use std::collections::HashMap;
 use std::process::Command;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::vec::Vec;
-use std::{error::Error, thread, time::Duration};
+
+mod errors;
+
+#[derive(Debug)]
+pub enum IconListFormat {
+    Superscript,
+    Subscript,
+    Digits,
+}
+
+impl FromStr for IconListFormat {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<IconListFormat, ()> {
+        match s.to_lowercase().as_str() {
+            "superscript" => Ok(IconListFormat::Superscript),
+            "subscript" => Ok(IconListFormat::Subscript),
+            "digits" => Ok(IconListFormat::Digits),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Settings {
+    pub icon_list_format: IconListFormat,
+    pub renumber_workspaces: bool,
+}
+
+// emulated global variable for our settings
+lazy_static! {
+    pub static ref SETTINGS: Mutex<Settings> = Mutex::new(Settings {
+        icon_list_format: IconListFormat::Digits,
+        renumber_workspaces: false
+    });
+}
 
 const SUPERSCRIPT: &'static [&'static str; 10] =
     &["⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"];
@@ -97,7 +138,38 @@ lazy_static! {
     .collect();
 }
 
-fn main() {
+fn main() -> Result<()> {
+    let mut app = clap_app!(rustygitprompt =>
+        (version: "1.0")
+        (author: "Julian Ospald <hasufell@posteo.de>")
+        (about: "Polybar/i3 workspace formatter")
+        (@arg FORMAT: -i --icon_list_format +takes_value "Sets the format for icon list: superscript, subscript or digits (default)")
+        (@arg RENUMBER_WORKSPACES: -r --renumber_workspaces "Whether to renumber the workspaces (default: false)")
+    );
+
+    let format = app
+        .clone()
+        .get_matches()
+        .value_of("FORMAT")
+        .map(|s| s.to_string());
+    let renum = app.clone().get_matches().is_present("RENUMBER_WORKSPACES");
+
+    if let Some(c) = format {
+        if let Ok(f) = IconListFormat::from_str(&c) {
+            let mut settings = SETTINGS.lock().unwrap();
+            settings.icon_list_format = f;
+        } else {
+            let _ = app.print_help();
+            println!("");
+            std::process::exit(1);
+        }
+    };
+
+    {
+        let mut settings = SETTINGS.lock().unwrap();
+        settings.renumber_workspaces = renum;
+    }
+
     simple_logger::init().unwrap();
 
     // establish a connection to i3 over a unix socket
@@ -121,7 +193,62 @@ fn main() {
         Err(err) => warn!("Error renaming workspaces: {}", err),
     }
 
-    // TODO: callback
+    let mut event_listener = i3ipc::I3EventListener::connect().unwrap();
+
+    event_listener.subscribe(&[i3ipc::Subscription::Workspace, i3ipc::Subscription::Window])?;
+
+    for event in event_listener.listen() {
+        match event.as_ref() {
+            Ok(i3ipc::event::Event::WindowEvent(info)) => match info.change {
+                i3ipc::event::inner::WindowChange::New => {
+                    rename_workspaces_report(connection.clone())
+                }
+                i3ipc::event::inner::WindowChange::Close => {
+                    rename_workspaces_report(connection.clone())
+                }
+                i3ipc::event::inner::WindowChange::Move => {
+                    rename_workspaces_report(connection.clone())
+                }
+                _ => (),
+            },
+            Ok(i3ipc::event::Event::WorkspaceEvent(info)) => match info.change {
+                i3ipc::event::inner::WorkspaceChange::Move => {
+                    rename_workspaces_report(connection.clone())
+                }
+                i3ipc::event::inner::WorkspaceChange::Init => match on_init(connection.clone()) {
+                    Ok(_) => (),
+                    Err(e) => warn!("Error on initialisation: {}", e),
+                },
+                _ => (),
+            },
+            Err(err) => warn!("Error: {}", err),
+            _ => (),
+        }
+    }
+
+    return Ok(());
+}
+
+fn on_init(con: Arc<Mutex<I3Connection>>) -> Result<()> {
+    let mut c = con.lock().unwrap();
+    let tree = c.get_tree()?;
+    let ws = find_focused_workspace(&tree).unwrap();
+    let name_parts = parse_workspace_name(ws.name.as_ref().unwrap().as_str()).unwrap();
+    let new_name = construct_workspace_name(&NameParts {
+        num: name_parts.num,
+        shortname: None,
+        icons: None,
+    });
+    c.run_command(
+        format!(
+            "rename workspace \"{}\" to \"{}\"",
+            ws.name.as_ref().unwrap(),
+            new_name
+        )
+        .as_str(),
+    )?;
+
+    return Ok(());
 }
 
 fn on_exit(con: Arc<Mutex<I3Connection>>) {
@@ -149,8 +276,20 @@ fn on_exit(con: Arc<Mutex<I3Connection>>) {
         if workspace.name == new_name {
             continue;
         }
-        info!("rename workspace {} to {}", workspace.name, new_name);
-        // c.run_command(format!("rename workspace {} to {}", workspace.name, new_name).as_str());
+        info!(
+            "rename workspace \"{}\" to \"{}\"",
+            workspace.name, new_name
+        );
+        match c.run_command(
+            format!(
+                "rename workspace \"{}\" to \"{}\"",
+                workspace.name, new_name
+            )
+            .as_str(),
+        ) {
+            Ok(_) => (),
+            Err(err) => warn!("Error running command: {}", err),
+        }
     }
 
     std::process::exit(0);
@@ -164,18 +303,8 @@ struct NameParts {
 }
 
 fn parse_workspace_name(name: &str) -> Option<NameParts> {
-    info!("name: {}", name);
     let re = Regex::new(r"(?P<num>\d+):?(?P<shortname>-u:\w)? ?(?P<icons>.+)?").unwrap();
     let matches = re.captures(name);
-    info!(
-        "iter length: {:?}",
-        re.captures_iter(name)
-            .into_iter()
-            .collect::<Vec<regex::Captures>>()
-            .len()
-    );
-    // info!("match is: {}", matches[<F12>0]);
-    // TODO: distinguish None?
     match matches {
         Some(m) => {
             return Some(NameParts {
@@ -192,7 +321,12 @@ fn construct_workspace_name(np: &NameParts) -> String {
     let first_part = [np.num.as_ref().unwrap().as_str(), ":"].concat();
     let last_part = if np.shortname.is_some() || np.icons.is_some() {
         if np.icons.is_some() {
-            [np.shortname.as_ref().unwrap_or(&String::from("")).as_str(), " ", np.icons.as_ref().unwrap().as_str()].concat()
+            [
+                np.shortname.as_ref().unwrap_or(&String::from("")).as_str(),
+                " ",
+                np.icons.as_ref().unwrap().as_str(),
+            ]
+            .concat()
         } else {
             String::from(np.shortname.as_ref().unwrap_or(&String::from("")).as_str())
         }
@@ -203,15 +337,28 @@ fn construct_workspace_name(np: &NameParts) -> String {
     return [first_part, last_part].concat();
 }
 
-fn rename_workspaces(con: Arc<Mutex<I3Connection>>) -> Result<(), i3ipc::MessageError> {
+fn rename_workspaces_report(con: Arc<Mutex<I3Connection>>) {
+    match rename_workspaces(con) {
+        Ok(_) => info!("Successfully renamed workspaces"),
+        Err(err) => warn!("Error renaming workspaces: {}", err),
+    }
+}
+
+fn rename_workspaces(con: Arc<Mutex<I3Connection>>) -> Result<()> {
     let mut c = con.lock().unwrap();
     let ws_infos = (c.get_workspaces()?).workspaces;
     let mut prev_output: Option<String> = None;
     let mut n: u32 = 1;
     let tree = c.get_tree()?;
-    let workspaces = find_focused_workspace(&tree);
+    let workspaces: Vec<&i3ipc::reply::Node> = find_workspaces(&tree);
+    info!("{:?}", workspaces);
+    info!("{:?}", workspaces.len());
 
     for (ws_index, workspace) in workspaces.iter().enumerate() {
+        info!("ws_index: {}", ws_index);
+        if ws_index >= ws_infos.len() {
+            break;
+        }
         let ws_info = &ws_infos[ws_index];
         let name_parts = match workspace
             .name
@@ -241,12 +388,14 @@ fn rename_workspaces(con: Arc<Mutex<I3Connection>>) -> Result<(), i3ipc::Message
         }
         prev_output = Some(ws_info.output.clone());
 
-        // TODO: del
-        let foo = &name_parts.clone();
-        info!("{:?}", foo);
-
         // TODO: renumber workspaces
-        let new_num = name_parts.num;
+        let settings = SETTINGS.lock().unwrap();
+        let renum = settings.renumber_workspaces;
+        let new_num = if renum {
+            Some(n.to_string())
+        } else {
+            name_parts.num
+        };
         n += 1;
 
         let new_name = construct_workspace_name(&NameParts {
@@ -257,8 +406,13 @@ fn rename_workspaces(con: Arc<Mutex<I3Connection>>) -> Result<(), i3ipc::Message
 
         match workspace.name.as_ref() {
             Some(n) => {
-                info!("rename workspace {} to {}", n, new_name);
-                // c.run_command(format!("rename workspace {} to {}", n, new_name).as_str())?;
+                info!("rename workspace \"{}\" to \"{}\"", n, new_name);
+                match c
+                    .run_command(format!("rename workspace \"{}\" to \"{}\"", n, new_name).as_str())
+                {
+                    Ok(_) => (),
+                    Err(err) => warn!("Error running command: {}", err),
+                }
             }
             None => warn!("Could not find workspace name"),
         }
@@ -289,6 +443,23 @@ fn find_focused_workspace_rec<'a>(
         } else {
             return None;
         }
+    }
+}
+
+// Find workspaces from this node. Ignored nodes without percentage (e.g. root or scratchpad).
+fn find_workspaces(node: &i3ipc::reply::Node) -> Vec<&i3ipc::reply::Node> {
+    let mut ws = Vec::new();
+    find_workspaces_rec(node, &mut ws);
+    return ws;
+}
+
+fn find_workspaces_rec<'a>(node: &'a i3ipc::reply::Node, ws: &mut Vec<&'a i3ipc::reply::Node>) {
+    if node.nodetype == i3ipc::reply::NodeType::Workspace && node.name != Some("__i3_scratch".to_string()) {
+        ws.push(node);
+    }
+
+    for child in node.nodes.iter() {
+        find_workspaces_rec(child, ws);
     }
 }
 
@@ -341,20 +512,18 @@ fn xprop(win_id: i32, property: &str) -> Option<Vec<String>> {
         });
 }
 
-// TODO: support for superscript and normal numbers
 fn format_icon_list(icons: Vec<String>) -> String {
     let mut new_list: Vec<String> = Vec::new();
     let icon_count = icons.into_iter().collect::<Counter<_>>();
     for (icon, count) in icon_count.iter() {
         if *count > 1 {
-            new_list.push(
-                [
-                    icon.to_string(),
-                    " ".to_string(),
-                    encode_base_10_number(*count as usize, SUPERSCRIPT),
-                ]
-                .concat(),
-            );
+            let settings = SETTINGS.lock().unwrap();
+            let encode_number = match &settings.icon_list_format {
+                IconListFormat::Superscript => encode_base_10_number(*count as usize, SUPERSCRIPT),
+                IconListFormat::Subscript => encode_base_10_number(*count as usize, SUBSCRIPT),
+                IconListFormat::Digits => encode_base_10_number(*count as usize, DIGITS),
+            };
+            new_list.push([icon.to_string(), encode_number].concat());
         } else {
             new_list.push(icon.to_string());
         }

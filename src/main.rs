@@ -351,11 +351,8 @@ fn rename_workspaces(con: Arc<Mutex<I3Connection>>) -> Result<()> {
     let mut n: u32 = 1;
     let tree = c.get_tree()?;
     let workspaces: Vec<&i3ipc::reply::Node> = find_workspaces(&tree);
-    info!("{:?}", workspaces);
-    info!("{:?}", workspaces.len());
 
     for (ws_index, workspace) in workspaces.iter().enumerate() {
-        info!("ws_index: {}", ws_index);
         if ws_index >= ws_infos.len() {
             break;
         }

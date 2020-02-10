@@ -9,6 +9,7 @@ extern crate simple_logger;
 extern crate error_chain;
 #[macro_use]
 extern crate clap;
+extern crate xcb;
 
 use counter::Counter;
 use errors::*;
@@ -17,7 +18,6 @@ use log::{info, warn};
 use regex::Regex;
 use signal_hook::{iterator::Signals, SIGINT, SIGTERM};
 use std::collections::HashMap;
-use std::process::Command;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -455,7 +455,9 @@ fn find_workspaces(node: &i3ipc::reply::Node) -> Vec<&i3ipc::reply::Node> {
 }
 
 fn find_workspaces_rec<'a>(node: &'a i3ipc::reply::Node, ws: &mut Vec<&'a i3ipc::reply::Node>) {
-    if node.nodetype == i3ipc::reply::NodeType::Workspace && node.name != Some("__i3_scratch".to_string()) {
+    if node.nodetype == i3ipc::reply::NodeType::Workspace
+        && node.name != Some("__i3_scratch".to_string())
+    {
         ws.push(node);
     }
 
@@ -479,7 +481,8 @@ fn leaves(node: &i3ipc::reply::Node) -> Vec<&i3ipc::reply::Node> {
 }
 
 fn icon_for_window(node: &i3ipc::reply::Node) -> String {
-    let classes = node.window.and_then(|w| xprop(w, "WM_CLASS"));
+    let (conn, _) = xcb::Connection::connect(None).unwrap();
+    let classes = node.window.and_then(|w| Some(get_wm_classes(&conn, &w)));
     match classes {
         Some(c) => {
             if c.len() > 0 {
@@ -494,23 +497,6 @@ fn icon_for_window(node: &i3ipc::reply::Node) -> String {
         }
         None => return String::from("*"),
     }
-}
-
-fn xprop(win_id: i32, property: &str) -> Option<Vec<String>> {
-    return Command::new("xprop")
-        .arg("-id")
-        .arg(win_id.to_string())
-        .arg(property)
-        .output()
-        .ok()
-        .and_then(|r| String::from_utf8(r.stdout).ok())
-        .map(|prop| {
-            let re = Regex::new(r#"([^"]*)"#).unwrap();
-            return re
-                .find_iter(prop.as_str())
-                .map(|m| String::from(m.as_str()))
-                .collect::<Vec<String>>();
-        });
 }
 
 fn format_icon_list(icons: Vec<String>) -> String {
@@ -538,4 +524,43 @@ fn encode_base_10_number(n: usize, symbols: &[&str; 10]) -> String {
         .chars()
         .map(|c| symbols[c.to_digit(10).unwrap() as usize])
         .collect()
+}
+
+fn get_wm_classes(conn: &xcb::Connection, id: &i32) -> Vec<String> {
+    let window: xcb::xproto::Window = *id as u32;
+    let long_length: u32 = 8;
+    let mut long_offset: u32 = 0;
+    let mut buf = Vec::new();
+    loop {
+        let cookie = xcb::xproto::get_property(
+            &conn,
+            false,
+            window,
+            xcb::xproto::ATOM_WM_CLASS,
+            xcb::xproto::ATOM_STRING,
+            long_offset,
+            long_length,
+        );
+        match cookie.get_reply() {
+            Ok(reply) => {
+                let value: &[u8] = reply.value();
+                buf.extend_from_slice(value);
+                match reply.bytes_after() {
+                    0 => break,
+                    _ => {
+                        let len = reply.value_len();
+                        long_offset += len / 4;
+                    }
+                }
+            }
+            Err(err) => {
+                println!("{:?}", err);
+                break;
+            }
+        }
+    }
+    let result = String::from_utf8(buf).unwrap();
+    let results: Vec<&str> = result.split('\0').collect();
+
+    return results.iter().map(|r| r.to_string()).collect();
 }

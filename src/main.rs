@@ -554,7 +554,7 @@ fn get_wm_classes(conn: &xcb::Connection, id: &i32) -> Vec<String> {
                 }
             }
             Err(err) => {
-                println!("{:?}", err);
+                warn!("{:?}", err);
                 break;
             }
         }

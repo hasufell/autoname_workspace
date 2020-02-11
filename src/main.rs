@@ -92,6 +92,7 @@ lazy_static! {
         ("gnome-terminal-server", "\u{f120}"),
         ("google-chrome", "\u{f268}"),
         ("gpick", "\u{f1fb}"),
+        ("gthumb", "\u{f03e}"),
         ("gvim", "\u{f121}"),
         ("imv", "\u{f03e}"),
         ("java", "\u{f121}"),

@@ -182,18 +182,18 @@ fn main() -> Result<()> {
 
     let signals = Signals::new(&[SIGINT, SIGTERM]).unwrap();
 
-    let con = Arc::clone(&connection);
+    let con_thread = connection.clone();
     thread::spawn(move || {
         for sig in signals.forever() {
             match sig {
-                signal_hook::SIGINT => on_exit(con.clone()),
-                signal_hook::SIGTERM => on_exit(con.clone()),
+                signal_hook::SIGINT => on_exit(&con_thread),
+                signal_hook::SIGTERM => on_exit(&con_thread),
                 _ => unreachable!(),
             }
         }
     });
 
-    match rename_workspaces(connection.clone()) {
+    match rename_workspaces(&connection) {
         Ok(_) => info!("Successfully renamed workspaces"),
         Err(err) => warn!("Error renaming workspaces: {}", err),
     }
@@ -206,21 +206,21 @@ fn main() -> Result<()> {
         match event.as_ref() {
             Ok(i3ipc::event::Event::WindowEvent(info)) => match info.change {
                 i3ipc::event::inner::WindowChange::New => {
-                    rename_workspaces_report(connection.clone())
+                    rename_workspaces_report(&connection)
                 }
                 i3ipc::event::inner::WindowChange::Close => {
-                    rename_workspaces_report(connection.clone())
+                    rename_workspaces_report(&connection)
                 }
                 i3ipc::event::inner::WindowChange::Move => {
-                    rename_workspaces_report(connection.clone())
+                    rename_workspaces_report(&connection)
                 }
                 _ => (),
             },
             Ok(i3ipc::event::Event::WorkspaceEvent(info)) => match info.change {
                 i3ipc::event::inner::WorkspaceChange::Move => {
-                    rename_workspaces_report(connection.clone())
+                    rename_workspaces_report(&connection)
                 }
-                i3ipc::event::inner::WorkspaceChange::Init => match on_init(connection.clone()) {
+                i3ipc::event::inner::WorkspaceChange::Init => match on_init(&connection) {
                     Ok(_) => (),
                     Err(e) => warn!("Error on initialisation: {}", e),
                 },
@@ -234,7 +234,7 @@ fn main() -> Result<()> {
     return Ok(());
 }
 
-fn on_init(con: Arc<Mutex<I3Connection>>) -> Result<()> {
+fn on_init(con: &Arc<Mutex<I3Connection>>) -> Result<()> {
     let mut c = con.lock().unwrap();
     let tree = c.get_tree()?;
     let ws = find_focused_workspace(&tree).unwrap();
@@ -256,7 +256,7 @@ fn on_init(con: Arc<Mutex<I3Connection>>) -> Result<()> {
     return Ok(());
 }
 
-fn on_exit(con: Arc<Mutex<I3Connection>>) {
+fn on_exit(con: &Arc<Mutex<I3Connection>>) {
     let mut c = con.lock().unwrap();
     let ws = c
         .get_workspaces()
@@ -342,14 +342,14 @@ fn construct_workspace_name(np: &NameParts) -> String {
     return [first_part, last_part].concat();
 }
 
-fn rename_workspaces_report(con: Arc<Mutex<I3Connection>>) {
+fn rename_workspaces_report(con: &Arc<Mutex<I3Connection>>) {
     match rename_workspaces(con) {
         Ok(_) => info!("Successfully renamed workspaces"),
         Err(err) => warn!("Error renaming workspaces: {}", err),
     }
 }
 
-fn rename_workspaces(con: Arc<Mutex<I3Connection>>) -> Result<()> {
+fn rename_workspaces(con: &Arc<Mutex<I3Connection>>) -> Result<()> {
     let mut c = con.lock().unwrap();
     let ws_infos = (c.get_workspaces()?).workspaces;
     let mut prev_output: Option<String> = None;
@@ -378,7 +378,7 @@ fn rename_workspaces(con: Arc<Mutex<I3Connection>>) -> Result<()> {
         for leave in leaves(workspace) {
             icon_list.push(icon_for_window(leave));
         }
-        let new_icons = format_icon_list(icon_list);
+        let new_icons = format_icon_list(&icon_list);
 
         match prev_output.as_ref() {
             Some(o) => {
@@ -500,7 +500,7 @@ fn icon_for_window(node: &i3ipc::reply::Node) -> String {
     }
 }
 
-fn format_icon_list(icons: Vec<String>) -> String {
+fn format_icon_list(icons: &Vec<String>) -> String {
     let mut new_list: Vec<String> = Vec::new();
     let icon_count = icons
         .into_iter()

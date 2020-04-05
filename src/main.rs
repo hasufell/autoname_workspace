@@ -226,7 +226,8 @@ fn main() -> Result<()> {
                 },
                 _ => (),
             },
-            Err(err) => warn!("Error: {}", err),
+            Ok(i3ipc::event::Event::ShutdownEvent(_info)) => std::process::exit(0),
+            Err(_err) => std::process::exit(0),
             _ => (),
         }
     }
